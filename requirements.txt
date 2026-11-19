@@ -1,0 +1,10 @@
+python-telegram-bot==20.7
+pysentimiento>=0.7.3
+transformers>=4.6.1
+torch>=2.0.0
+scikit-learn
+python-dotenv
+requests
+google-genai
+Pillow
+mutagen

@@ -1,12 +1,19 @@
 # predict.py - Versión para pysentimiento 0.7.3
-from pysentimiento import create_analyzer
+import logging
+from functools import lru_cache
 
 # ─── Modelos preentrenados ─────────────────────────
 
-print("🔄 Cargando modelos de pysentimiento...")
-emotion_analyzer = create_analyzer(task="emotion", lang="es")
-hate_analyzer = create_analyzer(task="hate_speech", lang="es")
-print("✅ Modelos cargados correctamente")
+@lru_cache(maxsize=1)
+def cargar_modelos():
+    from pysentimiento import create_analyzer
+
+    # pysentimiento cambia Transformers a ERROR al importarse.
+    logging.getLogger("transformers").setLevel(logging.WARNING)
+    return (
+        create_analyzer(task="emotion", lang="es"),
+        create_analyzer(task="hate_speech", lang="es"),
+    )
 
 # ─── Intención (reglas mejoradas) ─────────────────────
 
@@ -120,6 +127,7 @@ def mapear_emocion(emocion_raw):
 # ─── Función principal ─────────────────────────────────
 
 def analizar_texto(texto):
+    emotion_analyzer, hate_analyzer = cargar_modelos()
     try:
         # 🔥 MODELOS IA con pysentimiento
         emocion_pred = emotion_analyzer.predict(texto)

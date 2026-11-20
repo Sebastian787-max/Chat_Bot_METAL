@@ -3,17 +3,22 @@ import logging
 import os
 from random import sample
 from contextlib import suppress
+from datetime import timedelta
+from io import BytesIO
 from pathlib import Path
 from secrets import token_urlsafe
 from urllib.parse import quote
 
+import httpx
 from dotenv import load_dotenv
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from PIL import Image
+from telegram import InputFile, InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
-from telegram.error import NetworkError, TelegramError, TimedOut
-from telegram.ext import ApplicationBuilder, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.error import BadRequest, NetworkError, RetryAfter, TelegramError, TimedOut
+from telegram.ext import Application, ApplicationBuilder, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 import estilos
+from gemini_operaciones import ejecutar_gemini
 from acordes import obtener_acordes
 from diagramas import generar_diagramas
 from audio import (
@@ -39,6 +44,7 @@ from vision import (
 _LOG = logging.getLogger(__name__)
 _CANCIONES_ACORDES = {}
 _MAX_CANCIONES_ACORDES = 512
+_SEPARADOR_INICIO = "=" * 48
 
 
 class _FormatoConsola(logging.Formatter):
@@ -215,7 +221,10 @@ async def responder(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto = mensaje.text.strip()
     fragmento = extraer_fragmento_letra(texto)
     if fragmento is not None:
-        await _responder_letra(mensaje, fragmento)
+        if getattr(getattr(context, "application", None), "running", False):
+            context.application.create_task(_responder_letra(mensaje, fragmento), update=update)
+        else:
+            await _responder_letra(mensaje, fragmento)
         return
     if normalizar(texto) in _PETICIONES_OTRAS:
         etiqueta = _estado_generos(mensaje, context).get("activo")
@@ -265,7 +274,7 @@ async def _avisar_demora_audio(mensaje):
         await mensaje.reply_text(estilos.DEMORA_CANCION)
 
 
-async def _identificar_cancion(mensaje, operacion, accion):
+async def _identificar_cancion(mensaje, operacion, accion, *, es_audio=False):
     progreso = asyncio.create_task(_mostrar_escribiendo(mensaje, accion))
     demora = asyncio.create_task(_avisar_demora_audio(mensaje))
     try:
@@ -277,7 +286,7 @@ async def _identificar_cancion(mensaje, operacion, accion):
     except ErrorVision as error:
         motivo = str(error)
         await mensaje.reply_text(
-            estilos.ERRORES_AUDIO.get(motivo) or estilos.ERRORES_VISION[motivo]
+            estilos.ERRORES_AUDIO.get(motivo) or estilos.ERRORES_VISION.get(motivo, estilos.ERRORES_AUDIO["servicio"])
         )
         return
     except TelegramError as error:
@@ -289,11 +298,29 @@ async def _identificar_cancion(mensaje, operacion, accion):
             tarea.cancel()
         await asyncio.gather(progreso, demora, return_exceptions=True)
 
+    if es_audio:
+        if not resultado.get("evidencia"):
+            await mensaje.reply_text(estilos.formatear_audio_sin_cancion(resultado))
+            return
+        pista = resultado
+        if not resultado.get("metadatos_verificados") and resultado.get("rol_artista") != "compositor":
+            try:
+                async with asyncio.timeout(8):
+                    catalogo = await asyncio.to_thread(
+                        buscar_cancion, resultado["cancion"], resultado["artista"], titulo_exacto=True,
+                    )
+            except (ErrorLastFM, TimeoutError):
+                catalogo = None
+            if catalogo:
+                pista = dict(resultado, **catalogo)
+        await _mostrar_cancion(mensaje, pista, "alta", True)
+        return
+
     if not resultado["cancion"] or resultado["confianza"] == "baja":
         if resultado.get("fragmento"):
             await _mostrar_busqueda_letra(mensaje, resultado)
         else:
-            await mensaje.reply_text(estilos.formatear_audio_sin_cancion(resultado.get("tipo")))
+            await mensaje.reply_text(estilos.formatear_audio_sin_cancion(resultado))
         return
 
     try:
@@ -329,20 +356,22 @@ async def _mostrar_busqueda_letra(mensaje, resultado):
 async def _descargar_y_analizar_audio(mensaje):
     adjunto = mensaje.voice or mensaje.audio or mensaje.document
     mime = "audio/ogg" if mensaje.voice else adjunto.mime_type
-    if not mime and mensaje.audio:
+    if mime not in FORMATOS_AUDIO:
         mime = {
-            ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".ogg": "audio/ogg", ".wav": "audio/wav"
-        }.get(Path(adjunto.file_name or "").suffix.lower())
+            ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".ogg": "audio/ogg", ".opus": "audio/ogg",
+            ".wav": "audio/wav", ".flac": "audio/flac", ".aac": "audio/aac", ".webm": "audio/webm",
+        }.get(Path(getattr(adjunto, "file_name", None) or "").suffix.lower(), mime)
     validar_limites_audio(adjunto.file_size, getattr(adjunto, "duration", None))
     archivo = await adjunto.get_file()
     datos = await archivo.download_as_bytearray()
-    return await asyncio.to_thread(analizar_audio, bytes(datos), mime)
+    return await ejecutar_gemini("audio", mensaje, PRESUPUESTO_VISION, analizar_audio, bytes(datos), mime)
 
 
 async def audio_recibido(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mensaje = update.effective_message
+    await mensaje.reply_text("Analizando tu audio... Estoy intentando reconocer la melodía.")
     await _identificar_cancion(
-        mensaje, lambda: _descargar_y_analizar_audio(mensaje), ChatAction.RECORD_VOICE
+        mensaje, lambda: _descargar_y_analizar_audio(mensaje), ChatAction.RECORD_VOICE, es_audio=True,
     )
 
 
@@ -351,7 +380,8 @@ async def _responder_letra(mensaje, fragmento):
         await mensaje.reply_text(estilos.PEDIR_CANCION)
         return
     await _identificar_cancion(
-        mensaje, lambda: asyncio.to_thread(identificar_por_letra, fragmento), ChatAction.TYPING
+        mensaje, lambda: ejecutar_gemini("letra", mensaje, PRESUPUESTO_VISION, identificar_por_letra, fragmento),
+        ChatAction.TYPING
     )
 
 
@@ -397,12 +427,59 @@ def _enlaces_acordes(cancion, artista):
     return InlineKeyboardMarkup([botones[:2], botones[2:]])
 
 
-async def _responder_acordes(mensaje, cancion, artista=None):
+async def _enviar_diagrama_acordes(mensaje, png, pie):
+    try:
+        with Image.open(BytesIO(png), formats=["PNG"]) as imagen:
+            ancho, alto = imagen.size
+            if len(png) > 10_000_000 or ancho + alto > 10_000 or max(ancho, alto) > 20 * min(ancho, alto):
+                raise ValueError("El diagrama supera los límites de Telegram")
+            imagen.verify()
+    except (OSError, ValueError, SyntaxError, Image.DecompressionBombError) as error:
+        registrar_excepcion(_LOG, "Diagrama PNG inválido para Telegram", error, con_traza=False)
+        return estilos.DIAGRAMA_NO_ENVIADO
+
+    for intento in range(2):
+        try:
+            await mensaje.reply_photo(
+                photo=InputFile(png, filename="acordes.png"), caption=pie,
+                connect_timeout=8, pool_timeout=5, write_timeout=40, read_timeout=25,
+            )
+            return None
+        except RetryAfter as error:
+            demora = error.retry_after
+            espera = demora.total_seconds() if isinstance(demora, timedelta) else demora
+            if intento == 0 and 0 <= espera <= 5:
+                await asyncio.sleep(espera)
+                continue
+            registrar_excepcion(_LOG, "Telegram limitó el envío del diagrama", error, con_traza=False)
+            return estilos.DIAGRAMA_NO_ENVIADO
+        except NetworkError as error:
+            causa = error.__cause__
+            antes_de_enviar = isinstance(causa, (httpx.ConnectTimeout, httpx.ConnectError, httpx.PoolTimeout))
+            if antes_de_enviar and intento == 0:
+                await asyncio.sleep(1)
+                continue
+            fase = type(causa).__name__ if causa else type(error).__name__
+            registrar_excepcion(_LOG, f"Telegram no confirmó el diagrama ({fase})", error, con_traza=False)
+            if antes_de_enviar or isinstance(error, BadRequest):
+                return estilos.DIAGRAMA_NO_ENVIADO
+            return estilos.DIAGRAMA_SIN_CONFIRMACION
+        except TelegramError as error:
+            registrar_excepcion(_LOG, "Telegram rechazó el diagrama", error, con_traza=False)
+            return estilos.DIAGRAMA_NO_ENVIADO
+
+
+async def _responder_acordes(mensaje, cancion, artista=None, *, usuario=None):
     imagen = None
     try:
         async with asyncio.timeout(PRESUPUESTO_VISION):
-            datos = await asyncio.to_thread(obtener_acordes, cancion, artista)
-    except (ErrorVision, TimeoutError):
+            datos = await ejecutar_gemini(
+                "acordes", mensaje, PRESUPUESTO_VISION, obtener_acordes, cancion, artista, usuario=usuario,
+            )
+    except ErrorVision as error:
+        motivo = str(error)
+        texto = estilos.ERRORES_GEMINI.get(motivo, estilos.ERROR_ACORDES)
+    except TimeoutError:
         texto = estilos.ERROR_ACORDES
     else:
         texto = estilos.formatear_acordes(cancion, artista, datos)
@@ -423,10 +500,12 @@ async def _responder_acordes(mensaje, cancion, artista=None):
         if nombre not in ("Estándar", "Estándar en E", "E A D G B E"):
             pie += f"\nOjo: la canción usa afinación {afinacion}; las posiciones son para afinación estándar"
     with imagen:
+        aviso = await _enviar_diagrama_acordes(mensaje, imagen.getvalue(), pie)
+    if aviso:
         try:
-            await mensaje.reply_photo(photo=imagen, caption=pie)
+            await mensaje.reply_text(aviso)
         except TelegramError as error:
-            registrar_excepcion(_LOG, "No se pudo enviar la imagen de acordes", error)
+            registrar_excepcion(_LOG, "No se pudo avisar sobre el diagrama", error, con_traza=False)
 
 
 async def acordes(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -456,7 +535,7 @@ async def acordes_boton(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await consulta.answer(estilos.BOTON_ACORDES_VENCIDO)
         return
     await consulta.answer()
-    await _responder_acordes(consulta.message, *tema)
+    await _responder_acordes(consulta.message, *tema, usuario=getattr(consulta, "from_user", None))
 
 
 def _ficha_artista_cancion(artista):
@@ -473,7 +552,18 @@ async def _mostrar_cancion(mensaje, pista, confianza, en_catalogo, *, letra_veri
     texto = estilos.formatear_cancion(
         pista, confianza, en_catalogo, letra_verificada=letra_verificada,
     )
+    if pista.get("rol_artista") == "compositor":
+        await mensaje.reply_text(texto)
+        return
     boton = _boton_acordes(pista["cancion"], pista["artista"])
+    if pista.get("evidencia"):
+        consulta = quote(f"{pista['artista']} {pista['cancion']}", safe="")
+        enlace = pista.get("escuchar")
+        escuchar = InlineKeyboardButton(
+            "Escuchar" if enlace else "Buscar en Spotify",
+            url=enlace or f"https://open.spotify.com/search/{consulta}",
+        )
+        boton = InlineKeyboardMarkup([*boton.inline_keyboard, [escuchar]])
     if pista.get("portada"):
         try:
             await mensaje.reply_photo(photo=pista["portada"], caption=texto, reply_markup=boton)
@@ -514,8 +604,8 @@ async def _analizar_foto(mensaje):
 
     try:
         async with asyncio.timeout(PRESUPUESTO_VISION):
-            return await asyncio.to_thread(
-                analizar_imagen, bytes(imagen), mime_type, caption=mensaje.caption
+            return await ejecutar_gemini(
+                "foto", mensaje, PRESUPUESTO_VISION, analizar_imagen, bytes(imagen), mime_type, caption=mensaje.caption
             )
     except TimeoutError as error:
         registrar_excepcion(_LOG, "Se agotó el tiempo total del análisis de la foto", error)
@@ -526,7 +616,8 @@ async def foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mensaje = update.effective_message
     escribiendo = asyncio.create_task(_mostrar_escribiendo(mensaje))
     try:
-        resultado = await _analizar_foto(mensaje)
+        async with asyncio.timeout(PRESUPUESTO_VISION):
+            resultado = await _analizar_foto(mensaje)
         respuesta = estilos.formatear_foto(resultado)
         if resultado["banda"]:
             try:
@@ -535,10 +626,12 @@ async def foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 registrar_excepcion(_LOG, "Error de Last.fm al preparar la ficha de la foto", error)
                 ficha = estilos.ERRORES_LASTFM[str(error)]
             respuesta += "\n\n" + (ficha or estilos.BANDA_NO_ENCONTRADA)
+    except TimeoutError:
+        respuesta = estilos.ERRORES_VISION["timeout"]
     except ErrorVision as error:
         motivo = str(error)
         # Los fallos de la consulta ya se registran con el detalle de cada intento.
-        if motivo not in ("cuota", "timeout", "conexion", "servicio"):
+        if motivo not in ("cuota", "timeout", "conexion", "servicio", "saturado", "gemini_ocupado"):
             registrar_excepcion(_LOG, f"No se pudo procesar la foto: {motivo}", error, con_traza=False)
         respuesta = estilos.ERRORES_VISION[motivo]
     except Exception as error:
@@ -565,22 +658,66 @@ async def manejar_error(update: object, context: ContextTypes.DEFAULT_TYPE):
             pass
 
 
+class _AplicacionMoshpit(Application):
+    async def start(self):
+        await super().start()
+        if self.updater and self.updater.running:
+            _LOG.info(
+                "\n%s\n           Moshpit Bot al aire.\n"
+                "       Esperando mensajes de Telegram...\n%s",
+                _SEPARADOR_INICIO, _SEPARADOR_INICIO,
+            )
+
+
+async def _telegram_inicializado(_app):
+    _LOG.info("Conexión con Telegram establecida. Iniciando la recepción de mensajes...")
+
+
 def main():
     consola = logging.StreamHandler()
-    consola.setFormatter(_FormatoConsola("%(levelname)s %(name)s: %(message)s"))
+    consola.setFormatter(_FormatoConsola("[%(levelname)s] %(name)s: %(message)s"))
     logging.basicConfig(level=logging.INFO, handlers=[consola], force=True)
     # Las trazas HTTP de Telegram pueden incluir el token en la URL.
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
-    load_dotenv(Path(__file__).with_name(".env"))
-    _LOG.info("GEMINI_MODEL: %s", os.getenv("GEMINI_MODEL", "").strip() or "no definido")
-    _LOG.info("GEMINI_FALLBACK_MODEL: %s", os.getenv("GEMINI_FALLBACK_MODEL", "").strip() or "no definido")
-    token = os.getenv("TELEGRAM_TOKEN")
-    if not token:
-        raise SystemExit("Falta configurar TELEGRAM_TOKEN.")
-
+    # Hugging Face y Gemini también pueden usar las variantes con sufijo 2.
+    for biblioteca in ("httpx", "httpcore", "httpx2", "httpcore2", "huggingface_hub", "transformers"):
+        logging.getLogger(biblioteca).setLevel(logging.WARNING)
+    _LOG.info("\n%s\n           MOSHPIT BOT - INICIANDO\n%s", _SEPARADOR_INICIO, _SEPARADOR_INICIO)
+    etapa = "Cargando configuración del entorno"
     try:
-        app = ApplicationBuilder().token(token).build()
+        _LOG.info("%s...", etapa)
+        load_dotenv(Path(__file__).with_name(".env"))
+        token = os.getenv("TELEGRAM_TOKEN")
+        if not token:
+            raise SystemExit(f"{etapa}: falta configurar TELEGRAM_TOKEN.")
+        _LOG.info("Configuración del entorno cargada.")
+
+        etapa = "Cargando modelos de pysentimiento"
+        _LOG.info("%s...", etapa)
+        from predict import cargar_modelos
+
+        cargar_modelos()
+        _LOG.info("Modelos cargados correctamente.")
+
+        etapa = "Revisando la configuración de los servicios musicales"
+        _LOG.info("%s...", etapa)
+        if os.getenv("LASTFM_API_KEY"):
+            _LOG.info("Configuración de Last.fm disponible.")
+        else:
+            _LOG.warning("Falta configurar LASTFM_API_KEY para usar Last.fm.")
+        if os.getenv("GEMINI_API_KEY") and os.getenv("GEMINI_MODEL", "").strip():
+            _LOG.info("Configuración de Gemini disponible.")
+        else:
+            _LOG.warning("Gemini requiere GEMINI_API_KEY y GEMINI_MODEL.")
+
+        etapa = "Preparando la aplicación de Telegram"
+        _LOG.info("%s...", etapa)
+        app = (
+            ApplicationBuilder().application_class(_AplicacionMoshpit)
+            .token(token).post_init(_telegram_inicializado).build()
+        )
+
+        etapa = "Registrando comandos y funcionalidades"
+        _LOG.info("%s...", etapa)
         app.add_handler(MessageHandler(filters.ALL, _cerrar_tanda_activa), group=-1)
         app.add_handler(CommandHandler("start", iniciar))
         app.add_handler(CommandHandler("banda", banda))
@@ -588,23 +725,29 @@ def main():
         app.add_handler(CommandHandler("recomendar", recomendar))
         app.add_handler(CommandHandler("genero", genero))
         app.add_handler(CommandHandler("generos", generos))
-        app.add_handler(CommandHandler("cancion", cancion))
-        app.add_handler(CommandHandler("acordes", acordes))
-        app.add_handler(CallbackQueryHandler(acordes_boton, pattern=r"^acordes:[\w-]+$"))
+        app.add_handler(CommandHandler("cancion", cancion, block=False))
+        app.add_handler(CommandHandler("acordes", acordes, block=False))
+        app.add_handler(CallbackQueryHandler(acordes_boton, pattern=r"^acordes:[\w-]+$", block=False))
         filtro_fotos = filters.PHOTO
         for mime_type in FORMATOS_IMAGEN:
             filtro_fotos |= filters.Document.MimeType(mime_type)
-        app.add_handler(MessageHandler(filtro_fotos, foto))
+        app.add_handler(MessageHandler(filtro_fotos, foto, block=False))
         filtro_audio = filters.VOICE | filters.AUDIO
         for mime_type in FORMATOS_AUDIO:
             filtro_audio |= filters.Document.MimeType(mime_type)
-        app.add_handler(MessageHandler(filtro_audio, audio_recibido))
+        app.add_handler(MessageHandler(filtro_audio, audio_recibido, block=False))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, responder))
         app.add_error_handler(manejar_error)
-        print("🤘 Moshpit Bot al aire.")
+        _LOG.info("Comandos y funcionalidades registrados.")
+
+        etapa = "Conectando con Telegram e iniciando la recepción de mensajes"
+        _LOG.info("Conectando con Telegram...")
         app.run_polling()
     except TelegramError:
-        raise SystemExit("Telegram no pudo iniciar el bot. Revisa la conexión y TELEGRAM_TOKEN.") from None
+        raise SystemExit(f"{etapa}: Telegram no pudo iniciar el bot. Revisa la conexión y TELEGRAM_TOKEN.") from None
+    except Exception as error:
+        registrar_excepcion(_LOG, f"Error durante el arranque ({etapa})", error)
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":

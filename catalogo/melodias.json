@@ -1,0 +1,500 @@
+[
+  {
+    "cancion": "Crazy Jane",
+    "artista": "Harriett Abrams",
+    "notas": [
+      [
+        65,
+        1.0
+      ],
+      [
+        70,
+        1.0
+      ],
+      [
+        70,
+        2.0
+      ],
+      [
+        69,
+        1.0
+      ],
+      [
+        70,
+        1.0
+      ],
+      [
+        72,
+        1.0
+      ],
+      [
+        74,
+        1.0
+      ],
+      [
+        72,
+        1.0
+      ],
+      [
+        74,
+        0.5
+      ],
+      [
+        75,
+        0.5
+      ],
+      [
+        74,
+        2.0
+      ],
+      [
+        77,
+        1.5
+      ],
+      [
+        70,
+        0.5
+      ],
+      [
+        69,
+        3.0
+      ],
+      [
+        70,
+        1.0
+      ],
+      [
+        69,
+        1.0
+      ],
+      [
+        67,
+        1.0
+      ]
+    ],
+    "fuente": "openscore",
+    "id_origen": "openscore/6583907",
+    "revision_origen": "38c5db510224d9facdc4b08d741fc788cfb58ea8",
+    "url_origen": "https://github.com/OpenScore/Lieder/blob/38c5db510224d9facdc4b08d741fc788cfb58ea8/scores/Abrams%2C_Harriett/_/Crazy_Jane/lc6583907.mxl",
+    "licencia": "CC0-1.0",
+    "url_licencia": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "evidencia_licencia": "https://github.com/OpenScore/Lieder/blob/38c5db510224d9facdc4b08d741fc788cfb58ea8/LICENSE.txt",
+    "atribucion": "OpenScore Lieder, edición digital del proyecto OpenScore",
+    "categoria": "clásica",
+    "rol_artista": "compositor",
+    "incorporado_en": "2026-11-20T03:34:14+00:00",
+    "sha256_origen": "cf40c19ebe656cb68c673912cacf9d6aa9608bbe94bef8980fae9e21eeda0bc8",
+    "adaptacion": "Extracci?n de frases, conversi?n de alturas a MIDI y normalizaci?n de duraciones"
+  },
+  {
+    "cancion": "Crazy Jane",
+    "artista": "Harriett Abrams",
+    "notas": [
+      [
+        65,
+        1.0
+      ],
+      [
+        70,
+        1.0
+      ],
+      [
+        70,
+        2.0
+      ],
+      [
+        69,
+        1.0
+      ],
+      [
+        70,
+        1.0
+      ],
+      [
+        72,
+        1.0
+      ],
+      [
+        74,
+        1.0
+      ],
+      [
+        72,
+        1.0
+      ],
+      [
+        74,
+        0.5
+      ],
+      [
+        75,
+        0.5
+      ],
+      [
+        74,
+        2.0
+      ],
+      [
+        77,
+        1.5
+      ],
+      [
+        70,
+        0.5
+      ],
+      [
+        67,
+        0.5
+      ],
+      [
+        75,
+        1.5
+      ],
+      [
+        74,
+        2.0
+      ],
+      [
+        72,
+        1.5
+      ]
+    ],
+    "fuente": "openscore",
+    "id_origen": "openscore/6583907",
+    "revision_origen": "38c5db510224d9facdc4b08d741fc788cfb58ea8",
+    "url_origen": "https://github.com/OpenScore/Lieder/blob/38c5db510224d9facdc4b08d741fc788cfb58ea8/scores/Abrams%2C_Harriett/_/Crazy_Jane/lc6583907.mxl",
+    "licencia": "CC0-1.0",
+    "url_licencia": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "evidencia_licencia": "https://github.com/OpenScore/Lieder/blob/38c5db510224d9facdc4b08d741fc788cfb58ea8/LICENSE.txt",
+    "atribucion": "OpenScore Lieder, edición digital del proyecto OpenScore",
+    "categoria": "clásica",
+    "rol_artista": "compositor",
+    "incorporado_en": "2026-11-20T03:34:14+00:00",
+    "sha256_origen": "cf40c19ebe656cb68c673912cacf9d6aa9608bbe94bef8980fae9e21eeda0bc8",
+    "adaptacion": "Extracci?n de frases, conversi?n de alturas a MIDI y normalizaci?n de duraciones"
+  },
+  {
+    "cancion": "The Orphan’s Prayer",
+    "artista": "Harriett Abrams",
+    "notas": [
+      [
+        71,
+        1.0
+      ],
+      [
+        69,
+        1.5
+      ],
+      [
+        62,
+        0.5
+      ],
+      [
+        62,
+        2.0
+      ],
+      [
+        69,
+        1.0
+      ],
+      [
+        78,
+        1.5
+      ],
+      [
+        76,
+        0.5
+      ],
+      [
+        74,
+        2.0
+      ],
+      [
+        74,
+        1.0
+      ],
+      [
+        74,
+        1.5
+      ],
+      [
+        67,
+        0.5
+      ],
+      [
+        67,
+        2.0
+      ],
+      [
+        69,
+        1.0
+      ],
+      [
+        71,
+        1.5
+      ],
+      [
+        72,
+        0.5
+      ],
+      [
+        72,
+        0.5
+      ],
+      [
+        69,
+        1.0
+      ]
+    ],
+    "fuente": "openscore",
+    "id_origen": "openscore/6583966",
+    "revision_origen": "38c5db510224d9facdc4b08d741fc788cfb58ea8",
+    "url_origen": "https://github.com/OpenScore/Lieder/blob/38c5db510224d9facdc4b08d741fc788cfb58ea8/scores/Abrams%2C_Harriett/_/The_Orphan%E2%80%99s_Prayer/lc6583966.mxl",
+    "licencia": "CC0-1.0",
+    "url_licencia": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "evidencia_licencia": "https://github.com/OpenScore/Lieder/blob/38c5db510224d9facdc4b08d741fc788cfb58ea8/LICENSE.txt",
+    "atribucion": "OpenScore Lieder, edición digital del proyecto OpenScore",
+    "categoria": "clásica",
+    "rol_artista": "compositor",
+    "incorporado_en": "2026-11-20T03:34:15+00:00",
+    "sha256_origen": "41ca1fa445abcfca7e8351d1509fe7034d4095430c2f37457417a649667e1a0c",
+    "adaptacion": "Extracci?n de frases, conversi?n de alturas a MIDI y normalizaci?n de duraciones"
+  },
+  {
+    "cancion": "Celia’s Complaint",
+    "artista": "Thomas Arne",
+    "notas": [
+      [
+        74,
+        1.0
+      ],
+      [
+        70,
+        1.0
+      ],
+      [
+        67,
+        1.0
+      ],
+      [
+        62,
+        1.0
+      ],
+      [
+        67,
+        1.5
+      ],
+      [
+        70,
+        0.5
+      ],
+      [
+        69,
+        0.5
+      ],
+      [
+        74,
+        0.5
+      ],
+      [
+        70,
+        2.0
+      ],
+      [
+        75,
+        1.0
+      ],
+      [
+        74,
+        1.5
+      ],
+      [
+        66,
+        0.5
+      ],
+      [
+        67,
+        1.0
+      ],
+      [
+        72,
+        1.5
+      ],
+      [
+        74,
+        0.5
+      ],
+      [
+        70,
+        1.0
+      ],
+      [
+        69,
+        2.0
+      ]
+    ],
+    "fuente": "openscore",
+    "id_origen": "openscore/8859729",
+    "revision_origen": "38c5db510224d9facdc4b08d741fc788cfb58ea8",
+    "url_origen": "https://github.com/OpenScore/Lieder/blob/38c5db510224d9facdc4b08d741fc788cfb58ea8/scores/Arne%2C_Thomas/_/Celia%E2%80%99s_Complaint/lc8859729.mxl",
+    "licencia": "CC0-1.0",
+    "url_licencia": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "evidencia_licencia": "https://github.com/OpenScore/Lieder/blob/38c5db510224d9facdc4b08d741fc788cfb58ea8/LICENSE.txt",
+    "atribucion": "OpenScore Lieder, edición digital del proyecto OpenScore",
+    "categoria": "clásica",
+    "rol_artista": "compositor",
+    "adaptacion": "Extracción de frases, conversión de alturas a MIDI y normalización de duraciones",
+    "incorporado_en": "2026-11-20T03:42:19+00:00",
+    "sha256_origen": "ece3ba5591ba03982796e2ffe12aa36199ad9253d8b722bba4cbc7ee8161bf58"
+  },
+  {
+    "cancion": "Celia’s Complaint",
+    "artista": "Thomas Arne",
+    "notas": [
+      [
+        75,
+        1.0
+      ],
+      [
+        74,
+        1.5
+      ],
+      [
+        66,
+        0.5
+      ],
+      [
+        67,
+        1.0
+      ],
+      [
+        72,
+        1.5
+      ],
+      [
+        74,
+        0.5
+      ],
+      [
+        70,
+        1.0
+      ],
+      [
+        69,
+        2.0
+      ],
+      [
+        74,
+        1.0
+      ],
+      [
+        70,
+        1.0
+      ],
+      [
+        67,
+        1.0
+      ],
+      [
+        79,
+        1.0
+      ],
+      [
+        77,
+        1.0
+      ],
+      [
+        70,
+        1.0
+      ],
+      [
+        72,
+        1.0
+      ],
+      [
+        74,
+        2.0
+      ],
+      [
+        77,
+        0.5
+      ]
+    ],
+    "fuente": "openscore",
+    "id_origen": "openscore/8859729",
+    "revision_origen": "38c5db510224d9facdc4b08d741fc788cfb58ea8",
+    "url_origen": "https://github.com/OpenScore/Lieder/blob/38c5db510224d9facdc4b08d741fc788cfb58ea8/scores/Arne%2C_Thomas/_/Celia%E2%80%99s_Complaint/lc8859729.mxl",
+    "licencia": "CC0-1.0",
+    "url_licencia": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "evidencia_licencia": "https://github.com/OpenScore/Lieder/blob/38c5db510224d9facdc4b08d741fc788cfb58ea8/LICENSE.txt",
+    "atribucion": "OpenScore Lieder, edición digital del proyecto OpenScore",
+    "categoria": "clásica",
+    "rol_artista": "compositor",
+    "adaptacion": "Extracción de frases, conversión de alturas a MIDI y normalización de duraciones",
+    "incorporado_en": "2026-11-20T03:42:19+00:00",
+    "sha256_origen": "ece3ba5591ba03982796e2ffe12aa36199ad9253d8b722bba4cbc7ee8161bf58"
+  },
+  {
+    "cancion": "Celia’s Complaint",
+    "artista": "Thomas Arne",
+    "notas": [
+      [
+        70,
+        1.0
+      ],
+      [
+        67,
+        1.0
+      ],
+      [
+        79,
+        1.0
+      ],
+      [
+        77,
+        1.0
+      ],
+      [
+        70,
+        1.0
+      ],
+      [
+        72,
+        1.0
+      ],
+      [
+        74,
+        2.0
+      ],
+      [
+        77,
+        0.5
+      ],
+      [
+        68,
+        0.5
+      ],
+      [
+        68,
+        1.0
+      ],
+      [
+        67,
+        1.0
+      ]
+    ],
+    "fuente": "openscore",
+    "id_origen": "openscore/8859729",
+    "revision_origen": "38c5db510224d9facdc4b08d741fc788cfb58ea8",
+    "url_origen": "https://github.com/OpenScore/Lieder/blob/38c5db510224d9facdc4b08d741fc788cfb58ea8/scores/Arne%2C_Thomas/_/Celia%E2%80%99s_Complaint/lc8859729.mxl",
+    "licencia": "CC0-1.0",
+    "url_licencia": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "evidencia_licencia": "https://github.com/OpenScore/Lieder/blob/38c5db510224d9facdc4b08d741fc788cfb58ea8/LICENSE.txt",
+    "atribucion": "OpenScore Lieder, edición digital del proyecto OpenScore",
+    "categoria": "clásica",
+    "rol_artista": "compositor",
+    "adaptacion": "Extracción de frases, conversión de alturas a MIDI y normalización de duraciones",
+    "incorporado_en": "2026-11-20T03:42:19+00:00",
+    "sha256_origen": "ece3ba5591ba03982796e2ffe12aa36199ad9253d8b722bba4cbc7ee8161bf58"
+  }
+]

@@ -1,0 +1,8 @@
+[
+  {
+    "cancion": "Melodía propia de ejemplo",
+    "artista": "Autor del catálogo",
+    "fuente": "Ejemplo de transcripción del README de Moshpit Bot",
+    "notas": [[60, 1], [64, 0.75], [62, 1], [67, 1.5], [65, 1], [69, 1], [66, 0.75], [71, 1]]
+  }
+]

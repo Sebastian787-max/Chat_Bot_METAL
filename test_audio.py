@@ -1,4 +1,5 @@
 import sys
+from struct import pack
 import unittest
 import json
 import wave
@@ -32,17 +33,22 @@ def _wav(segundos):
     salida = BytesIO()
     with wave.open(salida, "wb") as archivo:
         archivo.setparams((1, 2, 8000, 0, "NONE", ""))
-        archivo.writeframes(bytes(2 * 8000 * segundos))
+        ciclo = b"".join(
+            pack("<h", 4000 if paso < 10 else -4000) for paso in range(20)
+        )
+        archivo.writeframes(ciclo * 400 * segundos)
     return salida.getvalue()
 
 
 class PruebasAudio(unittest.TestCase):
     def test_gemini_correcto_con_json_en_bloque(self):
         respuesta = "```json\n" + _JSON_AUDIO + "\n```"
-        with patch.object(audio, "consultar_gemini", return_value=(respuesta, None)) as gemini:
-            datos = audio.analizar_audio(_wav(1), "audio/x-wav")
-        self.assertEqual((datos["cancion"], datos["artista"]), ("Enter Sandman", "Metallica"))
-        self.assertEqual(datos["tipo"], "grabacion")
+        with patch.object(audio, "consultar_gemini", return_value=(respuesta, None)) as gemini, patch.object(
+            audio, "buscar_cancion", return_value=_PISTA
+        ):
+            datos = audio.analizar_audio(_wav(2), "audio/x-wav")
+        self.assertIsNone(datos["cancion"])
+        self.assertEqual(datos["alternativas"], [{"cancion": "Enter Sandman", "artista": "Metallica"}])
         self.assertEqual(gemini.call_args.args[0][1].inline_data.mime_type, "audio/wav")
 
     def test_json_invalido_vacio_y_bloqueo(self):
@@ -51,7 +57,7 @@ class PruebasAudio(unittest.TestCase):
             with self.subTest(texto=texto), patch.object(
                 audio, "consultar_gemini", return_value=(texto, respuesta)
             ), self.assertLogs(audio.__name__, level="ERROR"):
-                datos = audio.analizar_audio(_wav(1), "audio/wav")
+                datos = audio.analizar_audio(_wav(2), "audio/wav")
                 self.assertIsNone(datos["cancion"])
                 self.assertEqual(datos["confianza"], "baja")
 
@@ -78,11 +84,15 @@ class PruebasAudio(unittest.TestCase):
             return respuesta.text, None
 
         with patch.object(audio, "_validar_audio"), patch.object(
+            audio, "preparar_audio", return_value=(None, False)
+        ), patch.object(audio, "buscar_cancion", return_value=_PISTA), patch.object(
             audio, "_convertir_a_mp3", return_value=b"mp3"
         ), patch.object(audio, "consultar_gemini", side_effect=consultar), self.assertLogs(
             vision.__name__, level="INFO"
         ):
-            self.assertEqual(audio.analizar_audio(b"ogg", "audio/ogg")["cancion"], "Enter Sandman")
+            resultado = audio.analizar_audio(b"ogg", "audio/ogg")
+            self.assertIsNone(resultado["cancion"])
+            self.assertEqual(resultado["alternativas"][0]["cancion"], "Enter Sandman")
         self.assertEqual(
             [llamada.kwargs["contents"][1].inline_data.mime_type for llamada in modelo.call_args_list],
             ["audio/ogg", "audio/mpeg"],
@@ -162,7 +172,7 @@ class PruebasAudioTelegram(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("fragmento de prueba", llamada["caption"])
         self.mensaje.reply_text.assert_awaited_once_with("Similares")
 
-    async def test_nota_de_voz_identificada_sin_coincidencia_de_catalogo(self):
+    async def test_nota_de_voz_sin_evidencia_no_se_confirma(self):
         archivo = SimpleNamespace(download_as_bytearray=AsyncMock(return_value=bytearray(b"ogg")))
         self.mensaje.voice = SimpleNamespace(duration=15, file_size=3, get_file=AsyncMock(return_value=archivo))
         datos = {"cancion": "Enter Sandman", "artista": "Metallica", "confianza": "alta"}
@@ -171,8 +181,27 @@ class PruebasAudioTelegram(unittest.IsolatedAsyncioTestCase):
         ):
             await self.bot.audio_recibido(self.update, None)
         analizar.assert_called_once_with(b"ogg", "audio/ogg")
-        self.assertIn("sin verificar", self.mensaje.reply_text.call_args_list[0].args[0])
+        self.assertIn("Analizando tu audio", self.mensaje.reply_text.call_args_list[0].args[0])
+        self.assertIn("No pude identificar", self.mensaje.reply_text.call_args_list[1].args[0])
         self.mensaje.reply_photo.assert_not_called()
+
+    async def test_nota_confirmada_muestra_portada_genero_escucha_y_acordes(self):
+        archivo = SimpleNamespace(download_as_bytearray=AsyncMock(return_value=bytearray(b"ogg")))
+        self.mensaje.voice = SimpleNamespace(duration=15, file_size=3, get_file=AsyncMock(return_value=archivo))
+        datos = {"cancion": "Enter Sandman", "artista": "Metallica", "confianza": "alta", "evidencia": "huella"}
+        pista = dict(_PISTA, genero="Metal", escuchar="https://music.apple.com/us/song/1")
+        with patch.object(self.bot, "analizar_audio", return_value=datos), patch.object(
+            self.bot, "buscar_cancion", return_value=pista
+        ) as buscar:
+            await self.bot.audio_recibido(self.update, None)
+        buscar.assert_called_once_with("Enter Sandman", "Metallica", titulo_exacto=True)
+        envio = self.mensaje.reply_photo.call_args.kwargs
+        self.assertEqual(envio["photo"], _PISTA["portada"])
+        for frase in ("Canción identificada", "Enter Sandman", "Metallica", "Género musical: Metal"):
+            self.assertIn(frase, envio["caption"])
+        botones = envio["reply_markup"].inline_keyboard
+        self.assertTrue(botones[0][0].callback_data.startswith("acordes:"))
+        self.assertEqual(botones[1][0].url, pista["escuchar"])
 
     async def test_comando_titulo_busca_directo(self):
         contexto = SimpleNamespace(args=["Enter", "Sandman"])
@@ -390,22 +419,24 @@ class PruebasLetraConBusqueda(unittest.TestCase):
         self.verificar.return_value = "coincide"
         texto_audio = json.dumps({
             "cancion": "Pista tentativa", "artista": "Banda tentativa", "confianza": "media",
-            "tipo": "cantado", "letra_escuchada": "cielo de latón",
+            "tipo": "cantado", "letra_escuchada": "cielo de latón bajo estrellas",
         })
         with patch.object(audio, "consultar_gemini", side_effect=[
             (texto_audio, None), (self.texto, self.respuesta),
-        ]) as gemini:
-            resultado = audio.analizar_audio(_wav(1), "audio/wav")
+        ]) as gemini, patch.object(audio, "buscar_cancion", return_value={
+            "cancion": "Cielo de latón", "artista": "Banda del catálogo",
+        }):
+            resultado = audio.analizar_audio(_wav(2), "audio/wav")
         self.assertEqual(resultado["cancion"], "Cielo de latón")
         self.assertTrue(resultado["letra_verificada"])
         self.assertIn("herramientas", gemini.call_args.kwargs)
 
     def test_audio_con_confianza_alta_tambien_verifica_la_letra(self):
         texto = json.dumps({"cancion": "Forest", "artista": "Otra banda", "confianza": "alta",
-                            "letra_escuchada": "Forest susurra entre cables"})
+                            "letra_escuchada": "Forest susurra entre cables", "tipo": "cantado"})
         self.verificar.return_value = "no_coincide"
         with patch.object(audio, "consultar_gemini", return_value=(texto, None)):
-            resultado = audio.analizar_audio(_wav(1), "audio/wav")
+            resultado = audio.analizar_audio(_wav(2), "audio/wav")
         self.verificar.assert_called_once_with("Otra banda", "Forest", "Forest susurra entre cables")
         self.assertEqual(resultado["confianza"], "baja")
         self.assertIsNone(resultado["cancion"])

@@ -1,5 +1,6 @@
 import json
 import sys
+from io import BytesIO
 import unittest
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
@@ -7,7 +8,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 from urllib.parse import parse_qs, urlsplit
 
+import httpx
 from google.genai import errors
+from PIL import Image
+from telegram.error import TimedOut
 
 import acordes
 import estilos
@@ -36,6 +40,7 @@ class PruebasAcordesTelegram(unittest.IsolatedAsyncioTestCase):
         self.mensaje = SimpleNamespace(reply_text=AsyncMock(), reply_photo=AsyncMock())
         self.update = SimpleNamespace(effective_message=self.mensaje)
         self.contexto = SimpleNamespace(args=["Mi", "banda", "-", "Mi", "tema"])
+        self.enterContext(patch.object(vision, "_SATURACION", ((), 0.0)))
 
     def simular_gemini(self, datos):
         return patch.object(acordes, "consultar_gemini", return_value=(json.dumps(datos), None))
@@ -57,8 +62,63 @@ class PruebasAcordesTelegram(unittest.IsolatedAsyncioTestCase):
             "site:cifraclub.com Mi banda Mi tema", "site:letras.com Mi banda Mi tema",
         ])
         self.mensaje.reply_photo.assert_awaited_once()
+        envio = self.mensaje.reply_photo.call_args.kwargs
+        self.assertEqual((envio["write_timeout"], envio["read_timeout"]), (40, 25))
+        archivo = envio["photo"]
+        self.assertEqual(archivo.filename, "acordes.png")
+        with Image.open(BytesIO(archivo.input_file_content)) as png:
+            self.assertEqual(png.format, "PNG")
+            self.assertLessEqual(sum(png.size), 10_000)
+            png.verify()
+        self.assertLess(len(archivo.input_file_content), 10_000_000)
         self.assertIn("Posiciones en afinación estándar", self.mensaje.reply_photo.call_args.kwargs["caption"])
         self.assertIn("Ojo: la canción usa afinación Drop D", self.mensaje.reply_photo.call_args.kwargs["caption"])
+
+    @staticmethod
+    def timeout(causa):
+        error = TimedOut()
+        error.__cause__ = causa
+        return error
+
+    async def test_timeout_conexion_reintenta_sin_regenerar(self):
+        self.mensaje.reply_photo.side_effect = [self.timeout(httpx.ConnectTimeout("conexión")), None]
+        with self.simular_gemini(_PARTITURA) as gemini, patch.object(
+            self.bot, "generar_diagramas", wraps=self.bot.generar_diagramas,
+        ) as generar, patch.object(self.bot.asyncio, "sleep", new_callable=AsyncMock) as dormir:
+            await self.bot.acordes(self.update, self.contexto)
+        gemini.assert_called_once()
+        generar.assert_called_once()
+        dormir.assert_awaited_once_with(1)
+        enviados = [c.kwargs["photo"].input_file_content for c in self.mensaje.reply_photo.await_args_list]
+        self.assertEqual(len(enviados), 2)
+        self.assertEqual(enviados[0], enviados[1])
+        self.mensaje.reply_text.assert_awaited_once()
+
+    async def test_timeout_repetido_avisa_y_conserva_texto(self):
+        self.mensaje.reply_photo.side_effect = self.timeout(httpx.PoolTimeout("pool"))
+        with self.simular_gemini(_PARTITURA), patch.object(
+            self.bot.asyncio, "sleep", new_callable=AsyncMock,
+        ), self.assertLogs(self.bot.__name__, level="ERROR"):
+            await self.bot.acordes(self.update, self.contexto)
+        self.assertEqual(self.mensaje.reply_photo.await_count, 2)
+        self.assertEqual(self.mensaje.reply_text.await_count, 2)
+        self.assertEqual(self.mensaje.reply_text.await_args.args, (estilos.DIAGRAMA_NO_ENVIADO,))
+
+    async def test_timeout_ambiguo_no_duplica_la_foto(self):
+        for causa in (httpx.ReadTimeout("lectura"), httpx.WriteTimeout("escritura"), None):
+            with self.subTest(causa=causa):
+                self.mensaje.reply_photo.reset_mock()
+                self.mensaje.reply_photo.side_effect = self.timeout(causa)
+                with self.simular_gemini(_PARTITURA), self.assertLogs(self.bot.__name__, level="ERROR"):
+                    await self.bot.acordes(self.update, self.contexto)
+                self.mensaje.reply_photo.assert_awaited_once()
+                self.assertEqual(self.mensaje.reply_text.await_args.args, (estilos.DIAGRAMA_SIN_CONFIRMACION,))
+
+    async def test_png_invalido_no_se_sube(self):
+        with self.assertLogs(self.bot.__name__, level="ERROR"):
+            aviso = await self.bot._enviar_diagrama_acordes(self.mensaje, b"archivo roto", "")
+        self.assertEqual(aviso, estilos.DIAGRAMA_NO_ENVIADO)
+        self.mensaje.reply_photo.assert_not_awaited()
 
     async def test_letra_y_texto_libre_se_eliminan_de_todos_los_campos(self):
         texto = "Una frase inventada entre los acordes"
@@ -124,4 +184,5 @@ class PruebasAcordesTelegram(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([c.kwargs["model"] for c in generar.call_args_list],
                              ["principal"] * 3 + ["respaldo"] * 3)
             self.assertEqual([llamada.args[0] for llamada in dormir.call_args_list], [2, 4, 2, 4])
-            self.assertEqual(self.mensaje.reply_text.call_args.args, (estilos.ERROR_ACORDES,))
+            esperado = estilos.GEMINI_SATURADO if codigo == 503 else estilos.ERROR_ACORDES
+            self.assertEqual(self.mensaje.reply_text.call_args.args, (esperado,))

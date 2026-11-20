@@ -256,7 +256,13 @@ def recomendacion():
     return f"🤘 Parce, ¡pon a {banda} a todo volumen!\n🥁 Dato curioso: {dato}"
 
 
+GEMINI_SATURADO = "Gemini está temporalmente saturado. Intenta de nuevo en unos momentos."
+ERRORES_GEMINI = {
+    "saturado": GEMINI_SATURADO,
+    "gemini_ocupado": "Hay varias consultas a Gemini en curso. Intenta de nuevo en unos segundos.",
+}
 ERRORES_VISION = {
+    **ERRORES_GEMINI,
     "configuracion": "🔌 Parce, falta configurar la clave o el modelo de Gemini para mirar fotos.",
     "clave": "🔌 Gemini no aceptó la clave o el acceso, parce. Toca revisar la configuración.",
     "modelo": "🎚️ Ese modelo de Gemini no salió al escenario. Toca revisar la configuración, parce.",
@@ -323,40 +329,37 @@ def formatear_foto(resultado):
 
 
 PEDIR_CANCION = "💿 Parce, escribe /cancion seguido del título o manda un fragmento con «busca esta letra:»."
-DEMORA_CANCION = "🎚️ Gemini anda lento, parce. Sigo intentando sacar el tema…"
+DEMORA_CANCION = "Sigo analizando la canción. Puede tardar unos segundos más."
 ERRORES_AUDIO = {
+    "audio_corto": "El audio es demasiado corto. Graba al menos unos segundos de la melodía.",
+    "servicio": "El servicio de reconocimiento de audio no está disponible. Intenta más tarde.",
     "audio_largo": "🎸 Ese clip se fue de gira, parce. Mándame uno de 10 a 20 segundos, de hasta 10 MB.",
     "audio_vacio": "🎙️ Llegó puro silencio, parce. Graba un pedacito y vuelve a mandarlo.",
     "formato_audio": "🔌 Ese formato no sonó, hermano. Prueba enviando el clip como MP3.",
     "imagen": "🔌 Gemini no pudo leer el audio, parce. Prueba enviándolo como MP3.",
     "falta_ffmpeg": "🔌 Gemini no aceptó el formato, parce. Envíame un MP3 o configura FFmpeg en el equipo del bot.",
     "descarga_audio": "🎙️ Telegram no me soltó el audio, parce. Intenta enviarlo de nuevo.",
-    "timeout": "🥁 Gemini se quedó en prueba de sonido, parce. Intenta de nuevo en un rato.",
+    "timeout": "El reconocimiento de audio tardó demasiado. Intenta con un fragmento más corto.",
 }
-FRASES_AUDIO_SIN_CANCION = (
-    "🎙️ Parce, esta vez no pude sacar el tema. Manda otro clip o escríbeme el título.",
-    "🥁 Se me escapó esa canción, hermano. Prueba con otro pedazo o dime cómo se llama.",
-)
-FRASES_RIFF = (
-    "🎸 Parce, ese riff me dejó buscando la púa.",
-    "🤘 Ese tarareo me puso a sudar, hermano.",
-)
-
-
-def formatear_audio_sin_cancion(tipo):
-    if tipo in ("instrumental", "tarareo"):
-        frase = FRASES_RIFF[tipo == "tarareo"]
-        return (
-            f"{frase} Me cuesta reconocerlo sin letra. Canta una parte con letra, "
-            "pon la canción original cerca del micrófono o escríbeme un fragmento."
+def formatear_audio_sin_cancion(resultado):
+    texto = (
+        "No pude identificar esta canción con suficiente seguridad. Intenta grabar un fragmento "
+        "más largo, con menos ruido o interpretando la melodía principal."
+    )
+    alternativas = resultado.get("alternativas", [])
+    if alternativas:
+        texto += "\n\nPosibles coincidencias sin confirmar:\n" + "\n".join(
+            f"• {pista['cancion']} — {pista['artista']}" for pista in alternativas[:3]
         )
-    return choice(FRASES_AUDIO_SIN_CANCION)
+    if resultado.get("servicio_limitado"):
+        texto += "\n\nParte de la verificación no está disponible en este momento."
+    return texto
 
 
 def formatear_letra_incierta(resultado):
     respuesta = "🎧 Parce, no estoy seguro de qué tema es. Quedó sin verificar la letra."
     if resultado.get("tipo") in ("instrumental", "tarareo"):
-        respuesta += "\n" + formatear_audio_sin_cancion(resultado["tipo"])
+        respuesta += "\n" + formatear_audio_sin_cancion({})
     alternativas = resultado.get("alternativas", [])
     if alternativas:
         respuesta += "\n\nPodría ser…\n" + "\n".join(
@@ -366,7 +369,9 @@ def formatear_letra_incierta(resultado):
 
 
 def formatear_cancion(pista, confianza, en_catalogo, *, letra_verificada=None):
-    if confianza == "media" or letra_verificada is False:
+    if pista.get("evidencia"):
+        entrada = "🎵 Canción identificada"
+    elif confianza == "media" or letra_verificada is False:
         entrada = "🎧 Parce, creo que es este tema."
     elif letra_verificada:
         entrada = "🤘 La letra coincide, parce."
@@ -374,9 +379,12 @@ def formatear_cancion(pista, confianza, en_catalogo, *, letra_verificada=None):
         entrada = "🤘 Parce, este tema aparece en el catálogo."
     else:
         entrada = "🎧 Parce, Gemini sugiere este tema."
-    respuesta = f"{entrada}\n💿 Canción: {pista['cancion'][:200]}\n🎸 Artista: {pista['artista'][:200]}"
+    credito = "Composición" if pista.get("rol_artista") == "compositor" else "🎸 Artista"
+    respuesta = f"{entrada}\n💿 Canción: {pista['cancion'][:200]}\n{credito}: {pista['artista'][:200]}"
     if pista.get("album"):
         respuesta += f"\n📀 Álbum: {pista['album'][:200]}"
+    if pista.get("evidencia") and pista.get("genero"):
+        respuesta += f"\nGénero musical: {pista['genero'][:100]}"
     if letra_verificada is False:
         respuesta += "\n🔎 Resultado sin verificar la letra."
     if letra_verificada is not None and en_catalogo:
@@ -389,6 +397,10 @@ def formatear_cancion(pista, confianza, en_catalogo, *, letra_verificada=None):
 PEDIR_ACORDES = "🎸 Parce, escribe /acordes <banda - canción> o /acordes <canción>."
 BOTON_ACORDES_VENCIDO = "Ese botón ya salió de gira, parce. Prueba con /acordes."
 ERROR_ACORDES = "🎚️ Se nos cruzó un cable al buscar los acordes, parce. Intenta en un rato."
+DIAGRAMA_NO_ENVIADO = "No pude enviar el diagrama. Puedes usar los acordes en texto y los enlaces del mensaje anterior."
+DIAGRAMA_SIN_CONFIRMACION = (
+    "Telegram no confirmó el envío del diagrama. Si no aparece, consulta los acordes y los enlaces del mensaje anterior."
+)
 SIN_ACORDES = "🎸 No tengo los acordes de este tema, parce."
 AVISO_ACORDES = "⚠️ Acordes aproximados generados por IA: verifícalos antes de tocar"
 

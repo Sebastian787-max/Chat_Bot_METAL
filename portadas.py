@@ -23,7 +23,10 @@ def _mejor_coincidencia(opciones, cancion, artista, *, titulo_exacto=False):
         similitud_artista = SequenceMatcher(None, artista_buscado, nombre).ratio() if artista_buscado else 1
         if similitud_titulo >= minimo and similitud_artista >= minimo:
             clasificados.append((similitud_titulo + similitud_artista, opcion))
-    return max(clasificados, key=lambda par: par[0])[1] if clasificados else None
+    if not clasificados:
+        return None
+    return {campo: valor for campo, valor in max(clasificados, key=lambda par: par[0])[1].items()
+            if campo not in ("escuchar", "genero") or valor}
 
 
 def _url_portada(url):
@@ -36,6 +39,14 @@ def _url_portada(url):
     if any(indicio in ruta for indicio in ("2a96cbd8b46e442fc41c2b86b821562f", "placeholder", "noimage")):
         return None
     return url
+
+
+def _url_apple_music(url):
+    if isinstance(url, str):
+        partes = urlsplit(url)
+        if partes.scheme == "https" and partes.netloc in ("music.apple.com", "itunes.apple.com"):
+            return url
+    return None
 
 
 def _buscar_itunes(cancion, artista, *, titulo_exacto=False):
@@ -64,6 +75,8 @@ def _buscar_itunes(cancion, artista, *, titulo_exacto=False):
             "cancion": pista.get("trackName"),
             "artista": pista.get("artistName"),
             "album": pista.get("collectionName"),
+            "genero": pista.get("primaryGenreName") if isinstance(pista.get("primaryGenreName"), str) else None,
+            "escuchar": _url_apple_music(pista.get("trackViewUrl")),
             "portada": _url_portada((pista.get("artworkUrl100") or "").replace("100x100", "600x600")),
         }
         for pista in datos["results"] if isinstance(pista, dict)
@@ -109,8 +122,12 @@ def buscar_cancion(cancion, artista=None, *, titulo_exacto=False):
         if pista:
             return pista
     try:
-        return _buscar_lastfm(cancion, artista, titulo_exacto=titulo_exacto)
+        pista = _buscar_lastfm(cancion, artista, titulo_exacto=titulo_exacto)
     except ErrorLastFM:
         if error_itunes:
             raise error_itunes from None
         raise
+    if pista is None and error_itunes and titulo_exacto and artista:
+        # Un catálogo caído impide distinguir entre ausencia y verificación incompleta.
+        raise error_itunes
+    return pista

@@ -12,6 +12,36 @@ def _error_api(codigo, mensaje):
 
 
 class PruebasReintentos(unittest.TestCase):
+    def test_503_transitorio_se_recupera_en_principal(self):
+        cliente = Mock()
+        resultado = Mock()
+        cliente.models.generate_content.side_effect = [errors.ServerError(503, {}), resultado]
+        with patch.object(vision, "sleep") as esperar, self.assertLogs(vision.__name__, level="INFO"):
+            self.assertIs(vision._generar_con_reintentos(cliente, ("principal", "respaldo"), []), resultado)
+        esperar.assert_called_once_with(2)
+        self.assertEqual([c.kwargs["model"] for c in cliente.models.generate_content.call_args_list], ["principal"] * 2)
+
+    def test_503_prolongado_pausa_consultas_y_luego_se_recupera(self):
+        respuesta = Mock(text="respuesta")
+        entorno = {"GEMINI_API_KEY": "ficticia", "GEMINI_MODEL": "principal", "GEMINI_FALLBACK_MODEL": "respaldo"}
+        with patch.dict("os.environ", entorno), patch.object(vision.genai, "Client") as abrir, patch.object(
+            vision, "_SATURACION", ((), 0.0),
+        ), patch.object(vision, "monotonic", return_value=100) as reloj, patch.object(
+            vision, "sleep",
+        ) as esperar, self.assertLogs(vision.__name__, level="INFO"):
+            generar = abrir.return_value.__enter__.return_value.models.generate_content
+            generar.side_effect = errors.ServerError(503, {})
+            for _ in range(2):
+                with self.assertRaisesRegex(vision.ErrorVision, "saturado"):
+                    vision.consultar_gemini([], registrar_solicitud=False)
+            abrir.assert_called_once()
+            self.assertEqual([c.kwargs["model"] for c in generar.call_args_list], ["principal"] * 3 + ["respaldo"] * 3)
+            self.assertEqual([c.args[0] for c in esperar.call_args_list], [2, 4, 2, 4])
+            reloj.return_value = 121
+            generar.side_effect = None
+            generar.return_value = respuesta
+            self.assertEqual(vision.consultar_gemini([], registrar_solicitud=False), ("respuesta", respuesta))
+
     def test_foto_con_429_mantiene_reintentos_y_respaldo(self):
         cliente = Mock()
         respuesta = object()

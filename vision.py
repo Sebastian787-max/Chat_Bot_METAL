@@ -7,14 +7,17 @@ import re
 import traceback
 from collections import deque
 from io import BytesIO
-from threading import Lock
+from threading import Condition, Lock
 from time import monotonic, sleep
 from urllib.parse import quote, quote_plus
+from secrets import token_hex
 
 import httpx
 from google import genai
 from google.genai import errors, types
 from PIL import Image, ImageOps
+
+from gemini_operaciones import OPERACION
 
 
 FORMATOS_IMAGEN = ("image/jpeg", "image/png", "image/webp")
@@ -23,7 +26,12 @@ MAX_BYTES_IMAGEN = 12 * 1024 * 1024
 _SOLICITUDES = deque()
 _BLOQUEO = Lock()
 _LOG = logging.getLogger(__name__)
-_ESPERAS_REINTENTO = (2, 4)
+_ESPERAS_REINTENTO = (2, 4)  # Backoff exponencial, tres intentos como máximo por modelo.
+_PAUSA_SATURACION = 20
+_SATURACION = ((), 0.0)
+_COLA_GEMINI = Condition()
+_GEMINI_ACTIVAS = 0
+_ESPERA_COLA_GEMINI = 12
 _CODIGOS_REINTENTABLES = (429, 500, 502, 503, 504)
 _TIMEOUT_MINIMO = 10
 _TIMEOUT_INTENTO = 30
@@ -61,7 +69,7 @@ class ErrorVision(Exception):
 
 def redactar_secretos(texto):
     secretos = set()
-    for nombre in ("GEMINI_API_KEY", "TELEGRAM_TOKEN", "LASTFM_API_KEY"):
+    for nombre in ("GEMINI_API_KEY", "TELEGRAM_TOKEN", "LASTFM_API_KEY", "ACOUSTID_API_KEY"):
         valor = os.getenv(nombre)
         if valor:
             secretos.update((valor, quote(valor, safe=""), quote_plus(valor)))
@@ -175,6 +183,8 @@ def _motivo_api(error):
         "api key not valid" in (error.message or "").lower()
     ):
         return "clave"
+    if error.code == 503:
+        return "saturado"
     if error.code == 404:
         return "modelo"
     if error.code in (413, 415, 422) or (
@@ -225,10 +235,11 @@ def _es_error_de_transporte(error):
 
 
 def _generar_con_reintentos(cliente, modelos, contenido, esquema=_ESQUEMA_RESPUESTA,
-                            corregir_formato=None, *, herramientas=None, limite_total=None):
+                            corregir_formato=None, *, herramientas=None, limite_total=None, seguimiento=None):
     if limite_total is None:
         limite_total = monotonic() + PRESUPUESTO_VISION
     motivo = "timeout"
+    solo_503 = True
     error_busqueda = False
     for indice, modelo in enumerate(modelos):
         limite_modelo = limite_total
@@ -236,14 +247,16 @@ def _generar_con_reintentos(cliente, modelos, contenido, esquema=_ESQUEMA_RESPUE
             limite_modelo -= _RESERVA_RESPALDO
         thinking = _configurar_thinking(modelo)
         for intento, espera in enumerate((*_ESPERAS_REINTENTO, None), start=1):
+            if seguimiento:
+                _comprobar_gemini(modelos)
             restante = limite_modelo - monotonic()
             if restante < _TIMEOUT_MINIMO:
                 _LOG.info("%s", redactar_secretos(
-                    f"Gemini omite el intento {intento} con {modelo}: solo quedan {restante:.1f} s"
+                    f"{seguimiento or 'Gemini'} omite el intento {intento} con {modelo}: solo quedan {restante:.1f} s"
                 ))
                 break
             timeout_ms = int(min(_TIMEOUT_INTENTO, restante) * 1000)
-            contexto = f"Gemini con modelo {modelo}, intento {intento}, timeout {timeout_ms / 1000:g} s"
+            contexto = f"{seguimiento or 'Gemini'} con modelo {modelo}, intento {intento}, timeout {timeout_ms / 1000:g} s"
             config = types.GenerateContentConfig(
                 response_mime_type=None if herramientas else "application/json",
                 response_schema=None if herramientas else esquema,
@@ -265,6 +278,7 @@ def _generar_con_reintentos(cliente, modelos, contenido, esquema=_ESQUEMA_RESPUE
                 clase = type(error)
                 detalle = f"{contexto}, error {clase.__module__}.{clase.__name__}"
                 detalle += f" HTTP {codigo}" if codigo is not None else " (sin código HTTP)"
+                solo_503 = solo_503 and codigo == 503
                 transporte = _es_error_de_transporte(error)
                 motivo = _motivo_api(error) if es_api else ("timeout" if transporte else "servicio")
                 esperado = transporte or codigo in _CODIGOS_REINTENTABLES or motivo in ("timeout", "cuota")
@@ -296,10 +310,50 @@ def _generar_con_reintentos(cliente, modelos, contenido, esquema=_ESQUEMA_RESPUE
                     ))
                     break
                 _LOG.info("%s", redactar_secretos(f"{contexto}, reintento en {espera} s"))
+                if seguimiento:
+                    _comprobar_gemini(modelos)
                 sleep(espera)
         if indice + 1 < len(modelos):
-            _LOG.info("%s", redactar_secretos(f"Gemini pasa al modelo de respaldo {modelos[indice + 1]}"))
+            _LOG.info("%s", redactar_secretos(f"{seguimiento or 'Gemini'} pasa al modelo de respaldo {modelos[indice + 1]}"))
+    if motivo == "saturado" and solo_503:
+        global _SATURACION
+        with _BLOQUEO:
+            _SATURACION = (tuple(modelos), monotonic() + _PAUSA_SATURACION)
     raise ErrorVision("busqueda_no_disponible" if error_busqueda else motivo)
+
+
+def _comprobar_gemini(modelos):
+    operacion = OPERACION.get()
+    if operacion and (operacion.cancelada.is_set() or monotonic() >= operacion.limite):
+        raise ErrorVision("timeout")
+    with _BLOQUEO:
+        modelos_saturados, hasta = _SATURACION
+        if modelos == modelos_saturados and monotonic() < hasta:
+            raise ErrorVision("saturado")
+
+
+def _adquirir_gemini(modelos, limite_total, seguimiento):
+    global _GEMINI_ACTIVAS
+    try:
+        maximo = int(os.getenv("GEMINI_MAX_CONCURRENTES", "1"))
+    except ValueError:
+        maximo = 1
+    maximo = min(8, max(1, maximo))
+    hasta = min(limite_total - _TIMEOUT_MINIMO, monotonic() + _ESPERA_COLA_GEMINI)
+    aviso = False
+    with _COLA_GEMINI:
+        while True:
+            _comprobar_gemini(modelos)
+            restante = hasta - monotonic()
+            if restante <= 0:
+                raise ErrorVision("gemini_ocupado" if aviso else "timeout")
+            if _GEMINI_ACTIVAS < maximo:
+                _GEMINI_ACTIVAS += 1
+                return
+            if not aviso:
+                _LOG.info("%s en cola (%s/%s plazas ocupadas)", seguimiento, _GEMINI_ACTIVAS, maximo)
+                aviso = True
+            _COLA_GEMINI.wait(min(restante, 0.2))
 
 
 def consultar_gemini(contenido, esquema=_ESQUEMA_RESPUESTA, *, corregir_formato=None,
@@ -310,11 +364,27 @@ def consultar_gemini(contenido, esquema=_ESQUEMA_RESPUESTA, *, corregir_formato=
     if not clave or not modelo:
         raise ErrorVision("configuracion")
     respaldo = os.getenv("GEMINI_FALLBACK_MODEL", "").strip()
-    modelos = (modelo, respaldo) if respaldo else (modelo,)
+    modelos = (modelo, respaldo) if respaldo and respaldo != modelo else (modelo,)
 
-    if registrar_solicitud:
-        _registrar_solicitud()
+    operacion = OPERACION.get()
+    if limite_total is None:
+        limite_total = monotonic() + PRESUPUESTO_VISION
+    if operacion:
+        limite_total = min(limite_total, operacion.limite)
+    seguimiento = f"Gemini op={operacion.id if operacion else token_hex(6)} llamada={token_hex(4)}"
+    if operacion:
+        seguimiento += f" func={operacion.nombre} actor={operacion.actor}"
+    if herramientas:
+        seguimiento += " etapa=busqueda_web"
+    elif corregir_formato:
+        seguimiento += " etapa=audio"
+    global _GEMINI_ACTIVAS
+    adquirida = False
     try:
+        _adquirir_gemini(modelos, limite_total, seguimiento)
+        adquirida = True
+        if registrar_solicitud:
+            _registrar_solicitud()
         with genai.Client(
             api_key=clave,
             vertexai=False,
@@ -324,28 +394,37 @@ def consultar_gemini(contenido, esquema=_ESQUEMA_RESPUESTA, *, corregir_formato=
         ) as cliente:
             respuesta = _generar_con_reintentos(
                 cliente, modelos, contenido, esquema, corregir_formato,
-                herramientas=herramientas, limite_total=limite_total,
+                herramientas=herramientas, limite_total=limite_total, seguimiento=seguimiento,
             )
+            _LOG.info("%s completada", seguimiento)
             return respuesta.text, respuesta
+    except ErrorVision as error:
+        _LOG.info("%s terminó sin respuesta (%s)", seguimiento, error)
+        raise
     except errors.APIError as error:
         motivo = _motivo_api(error)
         esperado = error.code in _CODIGOS_REINTENTABLES or motivo in ("timeout", "cuota")
         registrar_excepcion(
-            _LOG, f"Error de la API de Gemini: {type(error).__name__} HTTP {error.code}",
+            _LOG, f"{seguimiento}: {type(error).__name__} HTTP {error.code}",
             error, con_traza=not esperado,
         )
         raise ErrorVision("cuota_busqueda" if herramientas and motivo == "cuota" else motivo) from None
     except (httpx.TimeoutException, TimeoutError) as error:
-        registrar_excepcion(_LOG, f"Tiempo de espera agotado en Gemini: {type(error).__name__}",
+        registrar_excepcion(_LOG, f"{seguimiento}: tiempo de espera agotado ({type(error).__name__})",
                              error, con_traza=False)
         raise ErrorVision("timeout") from None
     except (httpx.TransportError, ConnectionError) as error:
-        registrar_excepcion(_LOG, f"Error de conexión con Gemini: {type(error).__name__}",
+        registrar_excepcion(_LOG, f"{seguimiento}: error de conexión ({type(error).__name__})",
                              error, con_traza=False)
         raise ErrorVision("conexion") from None
     except ValueError as error:
-        registrar_excepcion(_LOG, "Error al configurar la solicitud a Gemini", error)
+        registrar_excepcion(_LOG, f"{seguimiento}: error al configurar la solicitud", error)
         raise ErrorVision("configuracion") from None
+    finally:
+        if adquirida:
+            with _COLA_GEMINI:
+                _GEMINI_ACTIVAS -= 1
+                _COLA_GEMINI.notify_all()
 
 
 def analizar_imagen(bytes_imagen, mime_type, *, caption=None):
